@@ -2,41 +2,43 @@ import mineflayer from 'mineflayer';
 
 export class BotInstance {
   constructor({ id, userId, serverIp, serverPort = 25565, username }) {
-    this.id = id;
-    this.userId = userId;
-    this.serverIp = serverIp;
-    this.serverPort = serverPort;
-    this.username = username || `NoobBot_${Math.random().toString(36).substring(2, 8)}`;
-    this.state = 'idle';
-    this.logs = [];
-    this.commandHistory = [];
-    this.bot = null;
-    this.wsClients = new Set();
-    this.lastCommandAt = null;
-    this.error = null;
-    this.behaviorInterval = null;
-    this.chatInterval = null;
+    this.id = id; // Identifiant du bot
+    this.userId = userId; // Identifiant de l'utilisateur propriétaire
+    this.serverIp = serverIp; // IP du serveur Minecraft
+    this.serverPort = serverPort; // Port du serveur (par défaut 25565)
+    this.username = username || `NoobBot_${Math.random().toString(36).substring(2, 8)}`; // Nom d'utilisateur, généré si absent
+    this.state = 'idle'; // État initial du bot
+    this.logs = []; // Historique des logs
+    this.commandHistory = []; // Historique des commandes envoyées
+    this.bot = null; // Instance mineflayer du bot
+    this.wsClients = new Set(); // Clients WebSocket connectés
+    this.lastCommandAt = null; // Date de la dernière commande envoyée
+    this.error = null; // Dernière erreur rencontrée
+    this.behaviorInterval = null; // Intervalle pour comportement aléatoire
+    this.chatInterval = null; // Intervalle pour chat automatique
   }
 
+  // Ajoute une ligne de log avec timestamp et diffuse aux clients WS
   log(msg) {
     const timestamp = new Date().toISOString();
     const line = `[${timestamp}] ${msg}`;
     this.logs.push(line);
-    if (this.logs.length > 1000) this.logs.shift();
+    if (this.logs.length > 1000) this.logs.shift(); // Limite des logs à 1000 lignes
     console.log(`Bot[${this.id}]: ${msg}`);
-    
-    // Broadcast logs to connected WS clients
+
+    // Envoie les logs à tous les clients WebSocket connectés
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) { // WebSocket.OPEN
         try {
           ws.send(JSON.stringify({ type: 'log', botId: this.id, message: line }));
         } catch (err) {
-          console.error('Failed to send log to WebSocket:', err);
+          console.error('Échec de l’envoi du log via WebSocket :', err);
         }
       }
     }
   }
 
+  // Retourne les infos essentielles sur le bot
   getInfo() {
     return {
       id: this.id,
@@ -47,20 +49,21 @@ export class BotInstance {
       state: this.state,
       lastCommandAt: this.lastCommandAt,
       error: this.error,
-      logs: this.logs.slice(-20),
-      commandHistory: this.commandHistory.slice(-10),
+      logs: this.logs.slice(-20), // 20 derniers logs
+      commandHistory: this.commandHistory.slice(-10), // 10 dernières commandes
     };
   }
 
+  // Création / connexion du bot au serveur Minecraft
   spawn() {
     if (this.bot) {
-      this.log('Bot already exists, disconnecting first...');
+      this.log('Le bot existe déjà, déconnexion en cours...');
       this.disconnect();
     }
 
     this.state = 'connecting';
     this.error = null;
-    this.log(`Connecting to ${this.serverIp}:${this.serverPort} as ${this.username}...`);
+    this.log(`Connexion à ${this.serverIp}:${this.serverPort} en tant que ${this.username}...`);
 
     try {
       this.bot = mineflayer.createBot({
@@ -72,29 +75,29 @@ export class BotInstance {
         hideErrors: false,
       });
 
-      // Set connection timeout
+      // Timeout de connexion 30 secondes
       const connectionTimeout = setTimeout(() => {
         if (this.state === 'connecting') {
-          this.log('Connection timeout - taking too long to connect');
+          this.log('Timeout de connexion - trop long à se connecter');
           this.state = 'error';
-          this.error = 'Connection timeout';
+          this.error = 'Timeout de connexion';
           if (this.bot) {
             this.bot.quit();
           }
         }
-      }, 30000); // 30 second timeout
+      }, 30000);
 
       this.bot.once('login', () => {
         clearTimeout(connectionTimeout);
         this.state = 'connected';
-        this.log('Bot connected to server successfully!');
+        this.log('Bot connecté au serveur avec succès !');
         this.startRandomBehavior();
       });
 
       this.bot.once('end', (reason) => {
         clearTimeout(connectionTimeout);
         this.state = 'disconnected';
-        this.log(`Bot disconnected: ${reason || 'Unknown reason'}`);
+        this.log(`Bot déconnecté : ${reason || 'Raison inconnue'}`);
         this.stopBehavior();
       });
 
@@ -102,78 +105,81 @@ export class BotInstance {
         clearTimeout(connectionTimeout);
         this.state = 'error';
         this.error = err.message || String(err);
-        this.log(`Connection error: ${this.error}`);
+        this.log(`Erreur de connexion : ${this.error}`);
         this.stopBehavior();
       });
 
+      // Gestion des messages de chat reçus
       this.bot.on('chat', (username, message) => {
         const chatLog = `[CHAT] <${username}> ${message}`;
         this.log(chatLog);
-        
-        // Broadcast chat to WS clients
+
+        // Diffuse les messages chat aux clients WS
         for (const ws of this.wsClients) {
           if (ws.readyState === 1) {
             try {
-              ws.send(JSON.stringify({ 
-                type: 'chat', 
-                botId: this.id, 
-                username, 
-                message 
+              ws.send(JSON.stringify({
+                type: 'chat',
+                botId: this.id,
+                username,
+                message
               }));
             } catch (err) {
-              console.error('Failed to send chat to WebSocket:', err);
+              console.error('Échec de l’envoi du chat via WebSocket :', err);
             }
           }
         }
       });
 
+      // Gestion du kick du bot
       this.bot.on('kicked', (reason) => {
-        this.log(`Bot was kicked: ${reason}`);
+        this.log(`Bot expulsé : ${reason}`);
         this.state = 'error';
-        this.error = `Kicked: ${reason}`;
+        this.error = `Expulsé : ${reason}`;
       });
 
     } catch (err) {
       this.state = 'error';
       this.error = err.message || String(err);
-      this.log(`Failed to create bot: ${this.error}`);
+      this.log(`Échec de création du bot : ${this.error}`);
     }
   }
 
+  // Lance un comportement aléatoire (chat + mouvements)
   startRandomBehavior() {
     if (!this.bot || this.state !== 'connected') return;
 
     const randomChats = [
-      "Hey everyone! 👋",
-      "What's up?",
-      "Cool server!",
-      "I'm a NoobBot 🤖",
-      "Nice builds here!",
-      "Anyone want to chat?",
-      "Let's explore together!",
-      "Need any help?",
-      "NoobBot is here to help!",
-      "I love this server! ❤️"
+      "Salut tout le monde ! 👋",
+      "Ça va ?",
+      "Serveur sympa !",
+      "Je suis un Noob",
+      "Beaux builds ici !",
+      "Quelqu’un veut discuter ?",
+      "Explorons ensemble !",
+      "Besoin d’aide ?",
+      "NoobBot est là pour aider !",
+      "J’adore ce serveur ! ❤️"
     ];
 
-    // Random chat every 30-60 seconds
+    // Chat aléatoire toutes les 30-60 secondes
     this.chatInterval = setInterval(() => {
       if (this.bot && this.state === 'connected') {
         const message = randomChats[Math.floor(Math.random() * randomChats.length)];
         this.bot.chat(message);
-        this.log(`Auto-chat: ${message}`);
+        this.log(`Chat automatique : ${message}`);
       }
     }, 30000 + Math.random() * 30000);
 
-    // Random movement and looking every 15-30 seconds
+    // Mouvement et regard aléatoires toutes les 15-30 secondes
     this.behaviorInterval = setInterval(() => {
       if (this.bot && this.state === 'connected') {
-        // Random look around
+        // Regarder autour aléatoirement
         const yaw = Math.random() * 2 * Math.PI;
         const pitch = (Math.random() - 0.5) * Math.PI * 0.5;
         this.bot.look(yaw, pitch, true);
 
-        // Random jump occasionally
+        // Sauter aléatoirement
         if (Math.random() < 0.3) {
           this.bot.setControlState('jump', true);
           setTimeout(() => {
@@ -181,11 +187,12 @@ export class BotInstance {
           }, 500);
         }
 
-        this.log('Performing random behavior...');
+        this.log('Comportement aléatoire en cours...');
       }
     }, 15000 + Math.random() * 15000);
   }
 
+  // Arrête les comportements aléatoires
   stopBehavior() {
     if (this.chatInterval) {
       clearInterval(this.chatInterval);
@@ -197,52 +204,56 @@ export class BotInstance {
     }
   }
 
+  // Envoie une commande de chat au serveur via le bot
   sendCommand(command) {
     if (this.state !== 'connected' || !this.bot) {
-      this.log('Cannot send command: bot not connected.');
+      this.log('Impossible d’envoyer la commande : bot non connecté.');
       return false;
     }
-    
+
     this.lastCommandAt = new Date();
     this.commandHistory.push({ command, timestamp: this.lastCommandAt });
-    this.log(`Sending command: ${command}`);
-    
+    this.log(`Envoi de la commande : ${command}`);
+
     try {
       this.bot.chat(command);
       return true;
     } catch (err) {
-      this.log(`Failed to send command: ${err.message}`);
+      this.log(`Échec d’envoi de la commande : ${err.message}`);
       return false;
     }
   }
 
+  // Déconnecte proprement le bot
   disconnect() {
     this.stopBehavior();
-    
+
     if (this.bot) {
       try {
         if (this.state === 'connected' || this.state === 'connecting') {
-          this.bot.quit('Disconnected by user');
+          this.bot.quit('Déconnecté par l’utilisateur');
         }
       } catch (err) {
-        this.log(`Error during disconnect: ${err.message}`);
+        this.log(`Erreur lors de la déconnexion : ${err.message}`);
       }
       this.bot = null;
     }
-    
+
     if (this.state !== 'error') {
       this.state = 'disconnected';
     }
-    this.log('Bot disconnected.');
+    this.log('Bot déconnecté.');
   }
 
+  // Ajoute un client WebSocket à la liste
   attachWS(ws) {
     this.wsClients.add(ws);
-    this.log(`WebSocket client connected. Total clients: ${this.wsClients.size}`);
+    this.log(`Client WebSocket connecté. Nombre total : ${this.wsClients.size}`);
   }
 
+  // Retire un client WebSocket de la liste
   detachWS(ws) {
     this.wsClients.delete(ws);
-    this.log(`WebSocket client disconnected. Total clients: ${this.wsClients.size}`);
+    this.log(`Client WebSocket déconnecté. Nombre total : ${this.wsClients.size}`);
   }
 }
