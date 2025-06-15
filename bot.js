@@ -141,23 +141,21 @@ export class BotInstance {
 
   const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'witch'];
   const randomChats = [
-    "Y’a quelqu’un ?",
+    "Je suis là.",
     "Je visite...",
-    "Beau monde ici.",
     "Hmm...",
-    "Je me balade 👟",
-    "Serveur sympa !"
+    "Beau monde ici."
   ];
 
-  // Chat naturel
+  // Less frequent chats (every 15-30 min)
   this.chatInterval = setInterval(() => {
     const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
     this.bot.chat(msg);
     this.log(`💬 Message : ${msg}`);
-  }, 15 * 60_000 + Math.random() * 10 * 60_000); // 15-25 min
+  }, 15 * 60_000 + Math.random() * 15 * 60_000);
 
-  // Mouvements humains random
-  this.moveInterval = setInterval(() => {
+  // Continuous movement function
+  const moveRandomly = () => {
     if (!this.bot || this.state !== 'connected') return;
 
     const actions = ['forward', 'back', 'left', 'right'];
@@ -165,25 +163,28 @@ export class BotInstance {
 
     this.bot.setControlState(action, true);
 
-    // Il regarde autour (simulateur de joueur)
+    // Look around naturally
     const yaw = Math.random() * Math.PI * 2;
     const pitch = Math.random() * 0.5 - 0.25;
     this.bot.look(yaw, pitch, true);
 
-    // Il saute parfois
-    if (Math.random() < 0.4) {
+    // Jump sometimes
+    if (Math.random() < 0.3) {
       this.bot.setControlState('jump', true);
       setTimeout(() => this.bot.setControlState('jump', false), 400);
     }
 
-    // Durée de marche
-    const duration = 1000 + Math.random() * 2000;
+    const duration = 2000 + Math.random() * 3000; // walk for 2-5 sec
     setTimeout(() => {
       this.bot.setControlState(action, false);
+      setTimeout(moveRandomly, 200); // small pause before next move
     }, duration);
-  }, 3000 + Math.random() * 3000); // bouge toutes les 3–6s
+  };
 
-  // Frappe mobs de temps en temps (pas tout le temps)
+  // Start movement loop
+  moveRandomly();
+
+  // Mob attack loop every 8-15 sec
   this.attackInterval = setInterval(() => {
     if (!this.bot || this.state !== 'connected') return;
 
@@ -193,7 +194,7 @@ export class BotInstance {
       this.bot.entity.position.distanceTo(e.position) < 6
     );
 
-    if (entity && Math.random() < 0.5) {
+    if (entity && Math.random() < 0.6) {
       try {
         this.bot.lookAt(entity.position.offset(0, entity.height / 2, 0), true, () => {
           this.bot.attack(entity);
@@ -203,8 +204,9 @@ export class BotInstance {
         this.log(`❌ Erreur d’attaque : ${err.message}`);
       }
     }
-  }, 20_000 + Math.random() * 10_000); // toutes les 20–30 sec
+  }, 8000 + Math.random() * 7000);
 }
+
 
 
   stopBehavior() {
