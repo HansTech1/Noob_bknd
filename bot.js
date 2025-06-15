@@ -137,65 +137,75 @@ export class BotInstance {
   }
 
   startRandomBehavior() {
+  if (!this.bot || this.state !== 'connected') return;
+
+  const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'witch'];
+  const randomChats = [
+    "Y’a quelqu’un ?",
+    "Je visite...",
+    "Beau monde ici.",
+    "Hmm...",
+    "Je me balade 👟",
+    "Serveur sympa !"
+  ];
+
+  // Chat naturel
+  this.chatInterval = setInterval(() => {
+    const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
+    this.bot.chat(msg);
+    this.log(`💬 Message : ${msg}`);
+  }, 15 * 60_000 + Math.random() * 10 * 60_000); // 15-25 min
+
+  // Mouvements humains random
+  this.moveInterval = setInterval(() => {
     if (!this.bot || this.state !== 'connected') return;
 
-    const randomChats = [
-      "Y'a t-il quelqu'un ?",
-      "Quelqu’un dans les parages ?",
-      "Je visite la zone 👀",
-      "Je teste un peu ce serveur.",
-      "C’est calme ici 😶",
-      "Hmm, personne ?",
-      "J’avance un peu...",
-      "Ce monde est grand !",
-      "Hello ?"
-    ];
+    const actions = ['forward', 'back', 'left', 'right'];
+    const action = actions[Math.floor(Math.random() * actions.length)];
 
-    const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'witch'];
+    this.bot.setControlState(action, true);
 
-    this.chatInterval = setInterval(() => {
-      if (this.bot && this.state === 'connected') {
-        const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
-        this.bot.chat(msg);
-        this.log(`💬 Message auto : ${msg}`);
+    // Il regarde autour (simulateur de joueur)
+    const yaw = Math.random() * Math.PI * 2;
+    const pitch = Math.random() * 0.5 - 0.25;
+    this.bot.look(yaw, pitch, true);
+
+    // Il saute parfois
+    if (Math.random() < 0.4) {
+      this.bot.setControlState('jump', true);
+      setTimeout(() => this.bot.setControlState('jump', false), 400);
+    }
+
+    // Durée de marche
+    const duration = 1000 + Math.random() * 2000;
+    setTimeout(() => {
+      this.bot.setControlState(action, false);
+    }, duration);
+  }, 3000 + Math.random() * 3000); // bouge toutes les 3–6s
+
+  // Frappe mobs de temps en temps (pas tout le temps)
+  this.attackInterval = setInterval(() => {
+    if (!this.bot || this.state !== 'connected') return;
+
+    const entity = this.bot.nearestEntity(e =>
+      e.type === 'mob' &&
+      hostileMobs.includes(e.name) &&
+      this.bot.entity.position.distanceTo(e.position) < 6
+    );
+
+    if (entity && Math.random() < 0.5) {
+      try {
+        this.bot.lookAt(entity.position.offset(0, entity.height / 2, 0), true, () => {
+          this.bot.attack(entity);
+          this.log(`⚔️ Attaque de ${entity.name}`);
+        });
+      } catch (err) {
+        this.log(`❌ Erreur d’attaque : ${err.message}`);
       }
-    }, 900000 + Math.random() * 600000); // 15–25 minutes
+    }
+  }, 20_000 + Math.random() * 10_000); // toutes les 20–30 sec
+}
 
-    this.moveInterval = setInterval(() => {
-      if (!this.bot || this.state !== 'connected') return;
-
-      const directions = ['forward', 'back', 'left', 'right'];
-      const dir = directions[Math.floor(Math.random() * directions.length)];
-
-      this.bot.setControlState(dir, true);
-      this.log(`🚶 Bouge vers : ${dir}`);
-
-      setTimeout(() => {
-        if (this.bot) this.bot.setControlState(dir, false);
-      }, 1000 + Math.random() * 1000);
-    }, 5000 + Math.random() * 5000); // 5–10 secondes
-
-    this.attackInterval = setInterval(() => {
-      if (!this.bot || this.state !== 'connected') return;
-
-      const entity = this.bot.nearestEntity(e =>
-        e.type === 'mob' &&
-        hostileMobs.includes(e.name) &&
-        this.bot.entity.position.distanceTo(e.position) < 10
-      );
-
-      if (entity) {
-        try {
-          this.bot.lookAt(entity.position.offset(0, entity.height, 0), true, () => {
-            this.bot.attack(entity);
-            this.log(`⚔️ Attaque de ${entity.name}`);
-          });
-        } catch (err) {
-          this.log(`❌ Erreur d’attaque : ${err.message}`);
-        }
-      }
-    }, 30000 + Math.random() * 15000); // 30–45 secondes
-  }
 
   stopBehavior() {
     if (this.chatInterval) clearInterval(this.chatInterval);
