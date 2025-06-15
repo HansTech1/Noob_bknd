@@ -1,7 +1,7 @@
 {
-  "name": "noob_bknd",
+  "name": "minecraftbot-backend",
   "version": "1.0.0",
-  "description": "Minecraft bot backend with mineflayer, pathfinder, express and websocket",
+  "description": "MinecraftBot platform backend with bot management and websocket",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -15,15 +15,11 @@
     "express": "^4.18.2",
     "express-rate-limit": "^6.7.0",
     "jsonwebtoken": "^9.0.0",
+    "mineflayer": "^4.7.0",
+    "mineflayer-pathfinder": "^1.4.3",
+    "minecraft-data": "^2.84.0",
     "morgan": "^1.10.0",
     "ws": "^8.13.0",
-    "mineflayer": "^4.29.0",
-    "mineflayer-pathfinder": "^2.4.5",
-    "mineflayer-collectblock": "^2.2.0",
-    "mineflayer-viewer": "^1.20.1",
-    "mineflayer-pvp": "^1.11.1",
-    "prismarine-viewer": "^1.13.1",
-    "prismarine-nbt": "^2.2.0",
-    "vec3": "^0.1.7"
+    "vec3": "^4.0.0"
   }
 }
