@@ -16,6 +16,7 @@ export class BotInstance {
     this.error = null;
     this.chatInterval = null;
     this.moveInterval = null;
+    this.attackInterval = null;
   }
 
   log(msg) {
@@ -53,7 +54,7 @@ export class BotInstance {
 
   spawn() {
     if (this.bot) {
-      this.log('Déconnexion du bot existant...');
+      this.log('Bot déjà existant, déconnexion...');
       this.disconnect();
     }
 
@@ -66,44 +67,46 @@ export class BotInstance {
         host: this.serverIp,
         port: this.serverPort,
         username: this.username,
-        auth: 'offline',
         version: false,
+        auth: 'offline',
+        hideErrors: false,
       });
 
-      const connectionTimeout = setTimeout(() => {
+      const timeout = setTimeout(() => {
         if (this.state === 'connecting') {
-          this.log('⏱ Timeout de connexion.');
+          this.log('⏱️ Timeout de connexion');
           this.state = 'error';
           this.error = 'Timeout de connexion';
-          this.bot.quit();
+          if (this.bot) this.bot.quit();
         }
       }, 30000);
 
       this.bot.once('login', () => {
-        clearTimeout(connectionTimeout);
+        clearTimeout(timeout);
         this.state = 'connected';
-        this.log('✅ Bot connecté avec succès !');
+        this.log('✅ Connecté avec succès');
         this.startRandomBehavior();
       });
 
       this.bot.once('end', (reason) => {
-        clearTimeout(connectionTimeout);
+        clearTimeout(timeout);
         this.state = 'disconnected';
         this.log(`🔌 Déconnecté : ${reason || 'Raison inconnue'}`);
         this.stopBehavior();
       });
 
       this.bot.once('error', (err) => {
-        clearTimeout(connectionTimeout);
+        clearTimeout(timeout);
         this.state = 'error';
         this.error = err.message || String(err);
-        this.log(`❌ Erreur de connexion : ${this.error}`);
+        this.log(`❌ Erreur : ${this.error}`);
         this.stopBehavior();
       });
 
       this.bot.on('chat', (username, message) => {
         const chatLog = `[CHAT] <${username}> ${message}`;
         this.log(chatLog);
+
         for (const ws of this.wsClients) {
           if (ws.readyState === 1) {
             try {
@@ -121,7 +124,7 @@ export class BotInstance {
       });
 
       this.bot.on('kicked', (reason) => {
-        this.log(`⚠️ Bot expulsé : ${reason}`);
+        this.log(`🚫 Expulsé : ${reason}`);
         this.state = 'error';
         this.error = `Expulsé : ${reason}`;
       });
@@ -129,107 +132,125 @@ export class BotInstance {
     } catch (err) {
       this.state = 'error';
       this.error = err.message || String(err);
-      this.log(`❌ Erreur de création du bot : ${this.error}`);
+      this.log(`❌ Création échouée : ${this.error}`);
     }
   }
 
-  // 💬 + 🤖 Chat et mouvements aléatoires
   startRandomBehavior() {
     if (!this.bot || this.state !== 'connected') return;
 
     const randomChats = [
       "Y'a t-il quelqu'un ?",
-      "Salut les amis.",
-      "Je découvre ce serveur 😄",
-      "Quelqu’un veut papoter ?",
-      "Explorons un peu.",
-      "Pas mal ici.",
-      "Je suis nouveau ici !",
-      "Serveur calme aujourd'hui...",
-      "Qui est là ?",
-      "Un jour parfait pour jouer."
+      "Quelqu’un dans les parages ?",
+      "Je visite la zone 👀",
+      "Je teste un peu ce serveur.",
+      "C’est calme ici 😶",
+      "Hmm, personne ?",
+      "J’avance un peu...",
+      "Ce monde est grand !",
+      "Hello ?"
     ];
 
-    // 💬 Message toutes les 20 min
+    const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'witch'];
+
     this.chatInterval = setInterval(() => {
       if (this.bot && this.state === 'connected') {
         const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
         this.bot.chat(msg);
-        this.log(`🗨️ Chat auto : ${msg}`);
+        this.log(`💬 Message auto : ${msg}`);
       }
-    }, 20 * 60 * 1000); // 20 minutes
+    }, 900000 + Math.random() * 600000); // 15–25 minutes
 
-    // 🤖 Mouvement toutes les 15 sec
-    const directions = ['forward', 'back', 'left', 'right'];
     this.moveInterval = setInterval(() => {
       if (!this.bot || this.state !== 'connected') return;
 
-      // Stop all movement
-      directions.forEach(dir => this.bot.setControlState(dir, false));
-
+      const directions = ['forward', 'back', 'left', 'right'];
       const dir = directions[Math.floor(Math.random() * directions.length)];
+
       this.bot.setControlState(dir, true);
+      this.log(`🚶 Bouge vers : ${dir}`);
 
-      this.log(`🚶 Déplacement : ${dir}`);
-
-      // Stop movement after 1.5-3 seconds
       setTimeout(() => {
         if (this.bot) this.bot.setControlState(dir, false);
-      }, 1500 + Math.random() * 1500);
-    }, 15000);
+      }, 1000 + Math.random() * 1000);
+    }, 5000 + Math.random() * 5000); // 5–10 secondes
+
+    this.attackInterval = setInterval(() => {
+      if (!this.bot || this.state !== 'connected') return;
+
+      const entity = this.bot.nearestEntity(e =>
+        e.type === 'mob' &&
+        hostileMobs.includes(e.name) &&
+        this.bot.entity.position.distanceTo(e.position) < 10
+      );
+
+      if (entity) {
+        try {
+          this.bot.lookAt(entity.position.offset(0, entity.height, 0), true, () => {
+            this.bot.attack(entity);
+            this.log(`⚔️ Attaque de ${entity.name}`);
+          });
+        } catch (err) {
+          this.log(`❌ Erreur d’attaque : ${err.message}`);
+        }
+      }
+    }, 30000 + Math.random() * 15000); // 30–45 secondes
   }
 
   stopBehavior() {
-    if (this.chatInterval) {
-      clearInterval(this.chatInterval);
-      this.chatInterval = null;
-    }
-    if (this.moveInterval) {
-      clearInterval(this.moveInterval);
-      this.moveInterval = null;
-    }
+    if (this.chatInterval) clearInterval(this.chatInterval);
+    if (this.moveInterval) clearInterval(this.moveInterval);
+    if (this.attackInterval) clearInterval(this.attackInterval);
+    this.chatInterval = this.moveInterval = this.attackInterval = null;
   }
 
   sendCommand(command) {
     if (this.state !== 'connected' || !this.bot) {
-      this.log('Impossible d’envoyer la commande : bot non connecté.');
+      this.log('❌ Bot non connecté');
       return false;
     }
+
     this.lastCommandAt = new Date();
     this.commandHistory.push({ command, timestamp: this.lastCommandAt });
-    this.log(`Commande envoyée : ${command}`);
+    this.log(`💬 Commande envoyée : ${command}`);
+
     try {
       this.bot.chat(command);
       return true;
     } catch (err) {
-      this.log(`Erreur d’envoi : ${err.message}`);
+      this.log(`❌ Erreur d’envoi : ${err.message}`);
       return false;
     }
   }
 
   disconnect() {
     this.stopBehavior();
+
     if (this.bot) {
       try {
         if (this.state === 'connected' || this.state === 'connecting') {
-          this.bot.quit('Déconnecté par utilisateur');
+          this.bot.quit('Déconnecté par l’utilisateur');
         }
       } catch (err) {
-        this.log(`Erreur de déconnexion : ${err.message}`);
+        this.log(`❌ Erreur déconnexion : ${err.message}`);
       }
       this.bot = null;
     }
-    if (this.state !== 'error') this.state = 'disconnected';
-    this.log('Bot déconnecté.');
+
+    if (this.state !== 'error') {
+      this.state = 'disconnected';
+    }
+
+    this.log('🔌 Bot déconnecté.');
   }
 
   attachWS(ws) {
     this.wsClients.add(ws);
-    this.log(`Client WebSocket ajouté. Total : ${this.wsClients.size}`);
+    this.log(`🔗 Client WS connecté (${this.wsClients.size})`);
   }
 
   detachWS(ws) {
     this.wsClients.delete(ws);
-    this.log(`Client WebSocket retiré. Total : ${this.wsClients.size}`);
+    this.log(`❌ Client WS déconnecté (${this.wsClients.size})`);
   }
 }
