@@ -19,9 +19,8 @@ export class BotInstance {
     this.lastCommandAt = null;
     this.error = null;
 
-    this.chatInterval = null;
-    this.behaviorTimeout = null;
-    this.attackInterval = null;
+    this.brainLoop = null;
+    this.attackLoop = null;
   }
 
   log(msg) {
@@ -93,15 +92,15 @@ export class BotInstance {
         this.state = 'connected';
         this.log('✅ Successfully connected');
         this.initPathfinder();
-        this.startBehaviorLoop();
-        this.startAttackLoop();
+        this.startBrain();
+        this.startCombat();
       });
 
       this.bot.once('end', (reason) => {
         clearTimeout(timeout);
         this.state = 'disconnected';
         this.log(`🔌 Disconnected: ${reason || 'Unknown reason'}`);
-        this.stopBehavior();
+        this.stopBrain();
       });
 
       this.bot.once('error', (err) => {
@@ -109,32 +108,7 @@ export class BotInstance {
         this.state = 'error';
         this.error = err.message || String(err);
         this.log(`❌ Error: ${this.error}`);
-        this.stopBehavior();
-      });
-
-      this.bot.on('chat', (username, message) => {
-        const chatLog = `[CHAT] <${username}> ${message}`;
-        this.log(chatLog);
-        for (const ws of this.wsClients) {
-          if (ws.readyState === 1) {
-            try {
-              ws.send(JSON.stringify({
-                type: 'chat',
-                botId: this.id,
-                username,
-                message
-              }));
-            } catch (err) {
-              console.error('WebSocket chat error:', err);
-            }
-          }
-        }
-      });
-
-      this.bot.on('kicked', (reason) => {
-        this.log(`🚫 Kicked: ${reason}`);
-        this.state = 'error';
-        this.error = `Kicked: ${reason}`;
+        this.stopBrain();
       });
 
     } catch (err) {
@@ -150,127 +124,90 @@ export class BotInstance {
     this.bot.pathfinder.setMovements(defaultMove);
   }
 
-  startBehaviorLoop() {
+  startBrain() {
     if (!this.bot || this.state !== 'connected') return;
 
-    const randomChats = [
-      "Je suis là.",
-      "Je visite...",
-      "Hmm...",
-      "Beau monde ici."
+    let mode = 'idle';
+    let lastChat = Date.now();
+
+    const chatPhrases = [
+      "Je regarde autour de moi.",
+      "C'est calme ici...",
+      "Beau temps aujourd'hui.",
+      "Où suis-je...",
+      "Hmm..."
     ];
 
-    const sendRandomChat = () => {
-      if (!this.bot || this.state !== 'connected') return;
-      const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
-      this.bot.chat(msg);
-      this.log(`💬 Sent: ${msg}`);
-    };
-
-    // Chat every 15–30 min
-    this.chatInterval = setInterval(sendRandomChat, 15 * 60_000 + Math.random() * 15 * 60_000);
-
-    // Behavior: walk, look, sneak/sprint, pause
-    const behavior = async () => {
-      if (!this.bot || this.state !== 'connected') return;
-
+    this.brainLoop = setInterval(async () => {
       try {
-        const sneak = Math.random() < 0.2;
-        const sprint = !sneak && Math.random() < 0.3;
-
-        this.bot.setControlState('sneak', sneak);
-        this.bot.setControlState('sprint', sprint);
-
-        const pos = this.bot.entity.position;
-        const randomGoal = new goals.GoalNear(
-          pos.x + (Math.random() * 20 - 10),
-          pos.y,
-          pos.z + (Math.random() * 20 - 10),
-          1
-        );
-
-        this.log(`🚶 Walking to (${randomGoal.x.toFixed(1)}, ${randomGoal.y.toFixed(1)}, ${randomGoal.z.toFixed(1)}) [Sneak=${sneak}, Sprint=${sprint}]`);
-        await this.bot.pathfinder.goto(randomGoal);
-
-        // Look around slowly
-        for (let i = 0; i < 5; i++) {
-          if (this.state !== 'connected') break;
-          const yaw = this.bot.entity.yaw + (Math.random() * 1 - 0.5);
-          const pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, this.bot.entity.pitch + (Math.random() * 0.4 - 0.2)));
-          this.bot.look(yaw, pitch, true);
-          await new Promise(r => setTimeout(r, 1000 + Math.random() * 1500));
+        if (Math.random() < 0.05) {
+          await this.randomLook();
         }
 
-        if (Math.random() < 0.3) {
-          this.log('🛑 Pausing to simulate human idle');
-          await new Promise(r => setTimeout(r, 3000 + Math.random() * 4000));
+        if (Date.now() - lastChat > (30_000 + Math.random() * 120_000)) {
+          const message = chatPhrases[Math.floor(Math.random() * chatPhrases.length)];
+          this.bot.chat(message);
+          this.log(`💬 Human Chat: ${message}`);
+          lastChat = Date.now();
         }
 
-        this.bot.setControlState('sneak', false);
-        this.bot.setControlState('sprint', false);
+        if (mode === 'idle' && Math.random() < 0.2) {
+          mode = 'wander';
+          await this.randomWalk();
+          mode = 'idle';
+        }
 
       } catch (err) {
-        this.log(`❌ Behavior error: ${err.message}`);
+        this.log(`🧠 Brain error: ${err.message}`);
       }
-
-      if (this.state === 'connected') {
-        this.behaviorTimeout = setTimeout(behavior, 1000);
-      }
-    };
-
-    behavior();
+    }, 1500);
   }
 
-  startAttackLoop() {
+  async randomLook() {
+    const yaw = this.bot.entity.yaw + (Math.random() * 1.5 - 0.75);
+    const pitch = this.bot.entity.pitch + (Math.random() * 0.5 - 0.25);
+    await this.bot.look(yaw, pitch, true);
+  }
+
+  async randomWalk() {
+    const pos = this.bot.entity.position;
+    const goal = new goals.GoalNear(
+      pos.x + (Math.random() * 15 - 7),
+      pos.y,
+      pos.z + (Math.random() * 15 - 7),
+      1
+    );
+    this.log(`🚶 Human wandering to ${goal.x.toFixed(1)} ${goal.z.toFixed(1)}`);
+    await this.bot.pathfinder.goto(goal);
+  }
+
+  startCombat() {
     if (!this.bot || this.state !== 'connected') return;
 
-    const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'witch'];
+    const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider'];
 
-    this.attackInterval = setInterval(() => {
-      if (!this.bot || this.state !== 'connected') return;
-
-      const entity = this.bot.nearestEntity(e =>
-        e.type === 'mob' &&
-        hostileMobs.includes(e.name) &&
-        this.bot.entity.position.distanceTo(e.position) < 6
-      );
-
-      if (entity && Math.random() < 0.7) {
-        try {
-          this.bot.lookAt(entity.position.offset(0, entity.height / 2, 0), true, () => {
-            this.bot.attack(entity);
-            this.log(`⚔️ Attacked ${entity.name}`);
-          });
-        } catch (err) {
-          this.log(`❌ Attack error: ${err.message}`);
-        }
-      } else if (Math.random() < 0.2) {
-        const pos = this.bot.entity.position;
-        const retreatGoal = new goals.GoalNear(
-          pos.x + (Math.random() * 4 - 2),
-          pos.y,
-          pos.z + (Math.random() * 4 - 2),
-          1
+    this.attackLoop = setInterval(() => {
+      try {
+        const mob = this.bot.nearestEntity(e => 
+          e.type === 'mob' &&
+          hostileMobs.includes(e.name) &&
+          this.bot.entity.position.distanceTo(e.position) < 6
         );
-        this.log('↩️ Retreating from combat');
-        this.bot.pathfinder.goto(retreatGoal).catch(() => {});
+
+        if (mob) {
+          this.bot.lookAt(mob.position.offset(0, mob.height / 2, 0), true);
+          this.bot.attack(mob);
+          this.log(`⚔️ Attacked ${mob.name}`);
+        }
+      } catch (err) {
+        this.log(`❌ Combat error: ${err.message}`);
       }
-    }, 8000 + Math.random() * 7000);
+    }, 3000);
   }
 
-  stopBehavior() {
-    if (this.chatInterval) clearInterval(this.chatInterval);
-    if (this.behaviorTimeout) clearTimeout(this.behaviorTimeout);
-    if (this.attackInterval) clearInterval(this.attackInterval);
-
-    this.chatInterval = null;
-    this.behaviorTimeout = null;
-    this.attackInterval = null;
-
-    if (this.bot) {
-      this.bot.setControlState('sneak', false);
-      this.bot.setControlState('sprint', false);
-    }
+  stopBrain() {
+    if (this.brainLoop) clearInterval(this.brainLoop);
+    if (this.attackLoop) clearInterval(this.attackLoop);
   }
 
   sendCommand(command) {
@@ -278,7 +215,6 @@ export class BotInstance {
       this.log('❌ Bot not connected');
       return false;
     }
-
     this.lastCommandAt = new Date();
     this.commandHistory.push({ command, timestamp: this.lastCommandAt });
     this.log(`💬 Command sent: ${command}`);
@@ -293,7 +229,7 @@ export class BotInstance {
   }
 
   disconnect() {
-    this.stopBehavior();
+    this.stopBrain();
     if (this.bot) {
       try {
         if (this.state === 'connected' || this.state === 'connecting') {
