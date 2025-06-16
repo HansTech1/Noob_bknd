@@ -124,7 +124,6 @@ class BotInstance {
   startAI(mcData) {
     const hostileMobs = ['zombie', 'skeleton', 'spider', 'witch', 'creeper'];
 
-    // Auto eat options
     this.bot.autoEat.options = {
       priority: 'foodPoints',
       startAt: 16,
@@ -135,7 +134,7 @@ class BotInstance {
       if (!this.bot || this.state !== 'connected') return;
 
       try {
-        const sword = this.bot.inventory.items().find(item => item.name.includes('sword'));
+        const sword = this.bot.inventory.items().find(item => item.name.includes('sword')); 
         if (!sword) await this.craftSword(mcData);
 
         if (this.bot.food < 15) await this.bot.autoEat.eat();
