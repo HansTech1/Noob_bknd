@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "MinecraftBot platform backend with bot management and websocket",
   "main": "server.js",
+  "type": "module"
   "scripts": {
     "start": "node server.js"
   },
