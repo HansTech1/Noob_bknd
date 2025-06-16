@@ -1,12 +1,11 @@
 const mineflayer = require('mineflayer');
 const minecraftData = require('minecraft-data');
 const Vec3 = require('vec3');
-const pathfinderPlugin = require('mineflayer-pathfinder');
-const pvpPlugin = require('mineflayer-pvp').plugin;
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const pvp = require('mineflayer-pvp').plugin;
 const collectBlock = require('mineflayer-collectblock').plugin;
 const autoeat = require('mineflayer-auto-eat').plugin;
 
-const { pathfinder, Movements, goals } = pathfinderPlugin;
 const { GoalNear } = goals;
 
 class BotInstance {
@@ -43,6 +42,18 @@ class BotInstance {
     }
   }
 
+  getInfo() {
+    return {
+      id: this.id,
+      userId: this.userId,
+      username: this.username,
+      serverIp: this.serverIp,
+      serverPort: this.serverPort,
+      state: this.state,
+      error: this.error,
+    };
+  }
+
   spawn() {
     if (this.bot) {
       this.log('Bot exists, disconnecting...');
@@ -62,9 +73,9 @@ class BotInstance {
         auth: 'offline'
       });
 
-      // Load plugins before spawn
+      // Load plugins
       this.bot.loadPlugin(pathfinder);
-      this.bot.loadPlugin(pvpPlugin);
+      this.bot.loadPlugin(pvp);
       this.bot.loadPlugin(collectBlock);
       this.bot.loadPlugin(autoeat);
 
@@ -73,7 +84,7 @@ class BotInstance {
           this.log('⏱️ Connection timeout');
           this.state = 'error';
           this.error = 'Timeout';
-          this.bot.quit();
+          this.bot.end();
         }
       }, 30000);
 
@@ -113,7 +124,7 @@ class BotInstance {
   startAI(mcData) {
     const hostileMobs = ['zombie', 'skeleton', 'spider', 'witch', 'creeper'];
 
-    // Auto eat
+    // Auto eat options
     this.bot.autoEat.options = {
       priority: 'foodPoints',
       startAt: 16,
@@ -181,7 +192,7 @@ class BotInstance {
   disconnect() {
     if (this.bot) {
       try {
-        this.bot.quit('Disconnected');
+        this.bot.end();
       } catch (err) {
         this.log(`❌ Disconnect error: ${err.message}`);
       }
