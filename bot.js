@@ -3,7 +3,6 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 import { Vec3 } from 'vec3';
-const mcDataLoader = require('minecraft-data');
 
 export class BotInstance {
   constructor({ id, userId, serverIp, serverPort = 25565, username }) {
@@ -11,7 +10,7 @@ export class BotInstance {
     this.userId = userId;
     this.serverIp = serverIp;
     this.serverPort = serverPort;
-    this.username = username || `Survivor_${Math.random().toString(36).substring(2, 8)}`;
+    this.username = username || `NoobBot_${Math.random().toString(36).substring(2, 8)}`;
     this.state = 'idle';
     this.logs = [];
     this.commandHistory = [];
@@ -19,12 +18,30 @@ export class BotInstance {
     this.wsClients = new Set();
     this.lastCommandAt = null;
     this.error = null;
+
     this.chatInterval = null;
     this.behaviorTimeout = null;
     this.attackInterval = null;
   }
 
-  /** Returns basic info for API/UI */
+  log(msg) {
+    const timestamp = new Date().toISOString();
+    const line = `[${timestamp}] ${msg}`;
+    this.logs.push(line);
+    if (this.logs.length > 1000) this.logs.shift();
+    console.log(`Bot[${this.id}]: ${msg}`);
+
+    for (const ws of this.wsClients) {
+      if (ws.readyState === 1) {
+        try {
+          ws.send(JSON.stringify({ type: 'log', botId: this.id, message: line }));
+        } catch (err) {
+          console.error('WebSocket log error:', err);
+        }
+      }
+    }
+  }
+
   getInfo() {
     return {
       id: this.id,
@@ -40,10 +57,14 @@ export class BotInstance {
     };
   }
 
-  /** Connects and starts the bot */
   spawn() {
-    if (this.bot) this.disconnect();
+    if (this.bot) {
+      this.log('Bot already exists, disconnecting...');
+      this.disconnect();
+    }
+
     this.state = 'connecting';
+    this.error = null;
     this.log(`Connecting to ${this.serverIp}:${this.serverPort} as ${this.username}...`);
 
     try {
@@ -51,185 +72,239 @@ export class BotInstance {
         host: this.serverIp,
         port: this.serverPort,
         username: this.username,
+        version: false,
         auth: 'offline',
-        version: false
+        hideErrors: false,
       });
+
       this.bot.loadPlugin(pathfinder);
 
       const timeout = setTimeout(() => {
         if (this.state === 'connecting') {
+          this.log('⏱️ Connection timeout');
+          this.state = 'error';
           this.error = 'Connection timeout';
-          this.log(`❌ ${this.error}`);
-          this.bot.quit();
+          if (this.bot) this.bot.quit();
         }
       }, 30000);
 
       this.bot.once('login', () => {
         clearTimeout(timeout);
         this.state = 'connected';
-        this.log('✅ Logged in');
-        this.mcData = mcDataLoader(this.bot.version);
-        this.movements = new Movements(this.bot, this.mcData);
-        this.bot.pathfinder.setMovements(this.movements);
+        this.log('✅ Successfully connected');
+        this.initPathfinder();
         this.startBehaviorLoop();
         this.startAttackLoop();
-        this.startChatLoop();
       });
 
-      this.bot.on('end', reason => {
+      this.bot.once('end', (reason) => {
+        clearTimeout(timeout);
         this.state = 'disconnected';
-        this.log(`🔌 Disconnected: ${reason}`);
+        this.log(`🔌 Disconnected: ${reason || 'Unknown reason'}`);
         this.stopBehavior();
-        setTimeout(() => this.spawn(), 5000);
       });
 
-      this.bot.on('error', err => {
-        this.error = err.message;
+      this.bot.once('error', (err) => {
+        clearTimeout(timeout);
+        this.state = 'error';
+        this.error = err.message || String(err);
         this.log(`❌ Error: ${this.error}`);
         this.stopBehavior();
       });
+
+      this.bot.on('chat', (username, message) => {
+        const chatLog = `[CHAT] <${username}> ${message}`;
+        this.log(chatLog);
+        for (const ws of this.wsClients) {
+          if (ws.readyState === 1) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'chat',
+                botId: this.id,
+                username,
+                message
+              }));
+            } catch (err) {
+              console.error('WebSocket chat error:', err);
+            }
+          }
+        }
+      });
+
+      this.bot.on('kicked', (reason) => {
+        this.log(`🚫 Kicked: ${reason}`);
+        this.state = 'error';
+        this.error = `Kicked: ${reason}`;
+      });
+
     } catch (err) {
-      this.log(`❌ Spawn failed: ${err.message}`);
+      this.state = 'error';
+      this.error = err.message || String(err);
+      this.log(`❌ Failed to create: ${this.error}`);
     }
   }
 
-  /** Main survival loop */
+  initPathfinder() {
+    if (!this.bot) return;
+    const defaultMove = new Movements(this.bot);
+    this.bot.pathfinder.setMovements(defaultMove);
+  }
+
   startBehaviorLoop() {
-    const loop = async () => {
-      if (this.state !== 'connected') return;
+    if (!this.bot || this.state !== 'connected') return;
+
+    const randomChats = ["Je suis là.", "Je visite...", "Hmm...", "Beau monde ici."];
+    this.chatInterval = setInterval(() => {
+      if (this.state === 'connected') {
+        const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
+        this.bot.chat(msg);
+        this.log(`💬 Sent: ${msg}`);
+      }
+    }, 15 * 60_000 + Math.random() * 15 * 60_000);
+
+    const behavior = async () => {
+      if (!this.bot || this.state !== 'connected') return;
       try {
-        await this.eatIfHungry();
-        await this.craftIfNeeded();
-        await this.gatherResources();
-        await this.buildShelterIfNight();
-        await this.randomWander();
+        const sneak = Math.random() < 0.2;
+        const sprint = !sneak && Math.random() < 0.3;
+        this.bot.setControlState('sneak', sneak);
+        this.bot.setControlState('sprint', sprint);
+
+        const pos = this.bot.entity.position;
+        const dx = Math.random() * 20 - 10;
+        const dz = Math.random() * 20 - 10;
+        const targetX = Math.floor(pos.x + dx);
+        const targetZ = Math.floor(pos.z + dz);
+        const targetY = await this.findSafeY(targetX, pos.y, targetZ);
+
+        const randomGoal = new goals.GoalNear(targetX, targetY, targetZ, 1);
+        this.log(`🚶 Walking to (${randomGoal.x}, ${randomGoal.y}, ${randomGoal.z}) [Sneak=${sneak}, Sprint=${sprint}]`);
+
+        await Promise.race([
+          this.bot.pathfinder.goto(randomGoal),
+          this.pathTimeout(8000)
+        ]);
+
+        for (let i = 0; i < 5; i++) {
+          if (this.state !== 'connected') break;
+          const yaw = this.bot.entity.yaw + (Math.random() * 1 - 0.5);
+          const pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.bot.entity.pitch + (Math.random() * 0.4 - 0.2)));
+          this.bot.look(yaw, pitch, true);
+          await new Promise(r => setTimeout(r, 1000 + Math.random() * 1500));
+        }
+
+        if (Math.random() < 0.3) {
+          this.log('🛑 Pausing to simulate human idle');
+          await new Promise(r => setTimeout(r, 3000 + Math.random() * 4000));
+        }
+
+        this.bot.setControlState('sneak', false);
+        this.bot.setControlState('sprint', false);
+
       } catch (err) {
         this.log(`❌ Behavior error: ${err.message}`);
+        this.bot.pathfinder.setGoal(null);
       }
-      this.behaviorTimeout = setTimeout(loop, 4000);
+
+      if (this.state === 'connected') {
+        this.behaviorTimeout = setTimeout(behavior, 1000);
+      }
     };
-    loop();
+    behavior();
   }
 
-  /** Eats when food < threshold */
-  async eatIfHungry() {
-    if (this.bot.food < 15) {
-      const food = this.bot.inventory.items().find(i => i.name.startsWith('cooked_'));
-      if (food) {
-        await this.bot.equip(food, 'hand');
-        await this.bot.consume();
-        this.log('🍖 Ate food');
-      } else {
-        await this.huntAnimals();
-      }
+  pathTimeout(ms) {
+    return new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Pathfinding timeout")), ms);
+    });
+  }
+
+  async findSafeY(x, baseY, z) {
+    const pos = new Vec3(x, baseY, z);
+    let block = this.bot.blockAt(pos);
+    let attempts = 0;
+    while (block && block.boundingBox !== 'empty' && attempts < 5) {
+      pos.y += 1;
+      block = this.bot.blockAt(pos);
+      attempts++;
     }
+    return pos.y;
   }
 
-  /** Crafts tools and furnace/armor if missing */
-  async craftIfNeeded() {
-    const inv = items => this.bot.inventory.items().some(i => items.includes(i.name));
-    if (!inv(['wooden_pickaxe'])) await this.craft('wooden_pickaxe');
-    if (!inv(['stone_pickaxe']) && inv(['cobblestone'])) await this.craft('stone_pickaxe');
-    if (!inv(['furnace']) && inv(['cobblestone'])) await this.craft('furnace');
-  }
-
-  /** Gathers wood, stone, coal, iron ore */
-  async gatherResources() {
-    const targets = ['log','stone','coal_ore','iron_ore'];
-    for (let name of targets) {
-      const block = this.bot.findBlock({ matching: b => b.name.includes(name), maxDistance: 20 });
-      if (block) {
-        await this.goto(block.position);
-        await this.bot.dig(block);
-        this.log(`⛏️ Mined ${name}`);
-        return;
-      }
-    }
-  }
-
-  /** Builds a simple 2x2 shelter at night */
-  async buildShelterIfNight() {
-    if (this.bot.time.timeOfDay > 13000) {
-      const base = this.bot.entity.position.offset(0, -1, 0);
-      // build 2x2 walls around
-      const offsets = [ [1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1],[0,-1],[1,-1] ];
-      for (let [dx,dz] of offsets) {
-        const pos = base.offset(dx,0,dz);
-        const block = this.mcData.blocksByName.dirt;
-        await this.bot.placeBlock(this.bot.blockAt(pos), new Vec3(0,1,0));
-      }
-      this.log('🏠 Built shelter');
-    }
-  }
-
-  /** Hunts nearest animal for food */
-  async huntAnimals() {
-    const prey = ['cow','pig','chicken','sheep'];
-    const animal = this.bot.nearestEntity(e => prey.includes(e.name));
-    if (animal) {
-      await this.goto(animal.position);
-      this.bot.attack(animal);
-      this.log(`⚔️ Hunted ${animal.name}`);
-    }
-  }
-
-  /** Random wandering */
-  async randomWander() {
-    const pos = this.bot.entity.position;
-    const goal = new goals.GoalNear(pos.x + this.rand(-10,10), pos.y, pos.z + this.rand(-10,10), 1);
-    try { await this.bot.pathfinder.goto(goal); }
-    catch {}
-  }
-
-  /** Attack hostile mobs */
   startAttackLoop() {
-    const hostiles = ['zombie','skeleton','creeper','spider','witch'];
+    if (!this.bot || this.state !== 'connected') return;
+    const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'witch'];
     this.attackInterval = setInterval(() => {
-      const target = this.bot.nearestEntity(e => hostiles.includes(e.name));
-      if (target) {
-        this.bot.lookAt(target.position.offset(0,target.height/2,0), true).then(()=>{ this.bot.attack(target); this.log(`⚔️ Attacked ${target.name}`); });
+      if (!this.bot || this.state !== 'connected') return;
+      const entity = this.bot.nearestEntity(e => e.type === 'mob' && hostileMobs.includes(e.name) && this.bot.entity.position.distanceTo(e.position) < 6);
+      if (entity && Math.random() < 0.7) {
+        try {
+          this.bot.lookAt(entity.position.offset(0, entity.height / 2, 0), true, () => {
+            this.bot.attack(entity);
+            this.log(`⚔️ Attacked ${entity.name}`);
+          });
+        } catch (err) {
+          this.log(`❌ Attack error: ${err.message}`);
+        }
       }
-    }, 5000);
-  }
-
-  /** Navigates to position */
-  async goto(pos) {
-    const goal = new goals.GoalNear(pos.x,pos.y,pos.z,1);
-    await this.bot.pathfinder.goto(goal);
-  }
-
-  sendCommand(cmd) {
-    if (this.state !== 'connected') return false;
-    this.lastCommandAt = new Date();
-    this.commandHistory.push({ cmd, timestamp: this.lastCommandAt });
-    this.bot.chat(cmd);
-    return true;
+    }, 8000 + Math.random() * 7000);
   }
 
   stopBehavior() {
-    clearTimeout(this.behaviorTimeout);
-    clearInterval(this.attackInterval);
-    clearInterval(this.chatInterval);
+    if (this.chatInterval) clearInterval(this.chatInterval);
+    if (this.behaviorTimeout) clearTimeout(this.behaviorTimeout);
+    if (this.attackInterval) clearInterval(this.attackInterval);
+    this.chatInterval = null;
+    this.behaviorTimeout = null;
+    this.attackInterval = null;
+    if (this.bot) {
+      this.bot.setControlState('sneak', false);
+      this.bot.setControlState('sprint', false);
+    }
+  }
+
+  sendCommand(command) {
+    if (this.state !== 'connected' || !this.bot) {
+      this.log('❌ Bot not connected');
+      return false;
+    }
+    this.lastCommandAt = new Date();
+    this.commandHistory.push({ command, timestamp: this.lastCommandAt });
+    this.log(`💬 Command sent: ${command}`);
+    try {
+      this.bot.chat(command);
+      return true;
+    } catch (err) {
+      this.log(`❌ Send error: ${err.message}`);
+      return false;
+    }
   }
 
   disconnect() {
     this.stopBehavior();
-    if (this.bot) { this.bot.quit(); this.bot=null; }
-    this.state = 'disconnected';
-    this.log('🔌 Disconnected');
-  }
-
-  attachWS(ws){ this.wsClients.add(ws); this.log(`WS clients: ${this.wsClients.size}`); }
-  detachWS(ws){ this.wsClients.delete(ws); this.log(`WS clients: ${this.wsClients.size}`); }
-
-  startChatLoop() {
-    this.chatInterval = setInterval(() => {
-      const msgs = ['Exploring...','Gathering resources','Need food','Building shelter','Hmm...'];
-      if (Math.random()<0.3) {
-        this.bot.chat(msgs[Math.floor(Math.random()*msgs.length)]);
+    if (this.bot) {
+      try {
+        if (this.state === 'connected' || this.state === 'connecting') {
+          this.bot.quit('User disconnected');
+        }
+      } catch (err) {
+        this.log(`❌ Disconnect error: ${err.message}`);
       }
-    }, this.rand(30000,120000));
+      this.bot = null;
+    }
+    if (this.state !== 'error') {
+      this.state = 'disconnected';
+    }
+    this.log('🔌 Bot disconnected.');
   }
 
-  rand(min,max){return Math.floor(Math.random()*(max-min+1)+min);}  
+  attachWS(ws) {
+    this.wsClients.add(ws);
+    this.log(`🔗 WS client connected (${this.wsClients.size})`);
+  }
+
+  detachWS(ws) {
+    this.wsClients.delete(ws);
+    this.log(`❌ WS client disconnected (${this.wsClients.size})`);
+  }
 }
