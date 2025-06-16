@@ -1,14 +1,8 @@
-const mineflayer = require('mineflayer');
-const minecraftData = require('minecraft-data');
-const Vec3 = require('vec3');
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
-const pvp = require('mineflayer-pvp').plugin;
-const collectBlock = require('mineflayer-collectblock').plugin;
-const autoeat = require('mineflayer-auto-eat').plugin;
+import mineflayer from 'mineflayer';
+import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
+import { Vec3 } from 'vec3';
 
-const { GoalNear } = goals;
-
-class BotInstance {
+export class BotInstance {
   constructor({ id, userId, serverIp, serverPort = 25565, username }) {
     this.id = id;
     this.userId = userId;
@@ -22,6 +16,12 @@ class BotInstance {
     this.wsClients = new Set();
     this.lastCommandAt = null;
     this.error = null;
+
+    this.chatInterval = null;
+    this.behaviorTimeout = null;
+    this.attackInterval = null;
+
+    this.isMoving = false;
   }
 
   log(msg) {
@@ -50,13 +50,16 @@ class BotInstance {
       serverIp: this.serverIp,
       serverPort: this.serverPort,
       state: this.state,
+      lastCommandAt: this.lastCommandAt,
       error: this.error,
+      logs: this.logs.slice(-20),
+      commandHistory: this.commandHistory.slice(-10),
     };
   }
 
   spawn() {
     if (this.bot) {
-      this.log('Bot exists, disconnecting...');
+      this.log('Bot already exists, disconnecting...');
       this.disconnect();
     }
 
@@ -70,41 +73,36 @@ class BotInstance {
         port: this.serverPort,
         username: this.username,
         version: false,
-        auth: 'offline'
+        auth: 'offline',
+        hideErrors: false,
       });
 
-      // Load plugins
+      // Attach pathfinder plugin for smart movement
       this.bot.loadPlugin(pathfinder);
-      this.bot.loadPlugin(pvp);
-      this.bot.loadPlugin(collectBlock);
-      this.bot.loadPlugin(autoeat);
 
       const timeout = setTimeout(() => {
         if (this.state === 'connecting') {
           this.log('⏱️ Connection timeout');
           this.state = 'error';
-          this.error = 'Timeout';
-          this.bot.end();
+          this.error = 'Connection timeout';
+          if (this.bot) this.bot.quit();
         }
       }, 30000);
 
       this.bot.once('login', () => {
         clearTimeout(timeout);
         this.state = 'connected';
-        this.log('✅ Connected');
-      });
-
-      this.bot.once('spawn', () => {
-        const mcData = minecraftData(this.bot.version);
-        const defaultMove = new Movements(this.bot, mcData);
-        this.bot.pathfinder.setMovements(defaultMove);
-        this.startAI(mcData);
+        this.log('✅ Successfully connected');
+        this.initPathfinder();
+        this.startBehaviorLoop();
+        this.startAttackLoop();
       });
 
       this.bot.once('end', (reason) => {
         clearTimeout(timeout);
         this.state = 'disconnected';
         this.log(`🔌 Disconnected: ${reason || 'Unknown reason'}`);
+        this.stopBehavior();
       });
 
       this.bot.once('error', (err) => {
@@ -112,6 +110,32 @@ class BotInstance {
         this.state = 'error';
         this.error = err.message || String(err);
         this.log(`❌ Error: ${this.error}`);
+        this.stopBehavior();
+      });
+
+      this.bot.on('chat', (username, message) => {
+        const chatLog = `[CHAT] <${username}> ${message}`;
+        this.log(chatLog);
+        for (const ws of this.wsClients) {
+          if (ws.readyState === 1) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'chat',
+                botId: this.id,
+                username,
+                message
+              }));
+            } catch (err) {
+              console.error('WebSocket chat error:', err);
+            }
+          }
+        }
+      });
+
+      this.bot.on('kicked', (reason) => {
+        this.log(`🚫 Kicked: ${reason}`);
+        this.state = 'error';
+        this.error = `Kicked: ${reason}`;
       });
 
     } catch (err) {
@@ -121,86 +145,189 @@ class BotInstance {
     }
   }
 
-  startAI(mcData) {
-    const hostileMobs = ['zombie', 'skeleton', 'spider', 'witch', 'creeper'];
+  initPathfinder() {
+    if (!this.bot) return;
 
-    this.bot.autoEat.options = {
-      priority: 'foodPoints',
-      startAt: 16,
-      bannedFood: []
+    const defaultMove = new Movements(this.bot);
+    this.bot.pathfinder.setMovements(defaultMove);
+  }
+
+  startBehaviorLoop() {
+    if (!this.bot || this.state !== 'connected') return;
+
+    const randomChats = [
+      "Je suis là.",
+      "Je visite...",
+      "Hmm...",
+      "Beau monde ici."
+    ];
+
+    const sendRandomChat = () => {
+      if (!this.bot || this.state !== 'connected') return;
+      const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
+      this.bot.chat(msg);
+      this.log(`💬 Sent: ${msg}`);
     };
 
-    const loop = async () => {
+    // Send chat occasionally, every 15-30 mins, no spam
+    this.chatInterval = setInterval(sendRandomChat, 15 * 60_000 + Math.random() * 15 * 60_000);
+
+    // Behavior loop: walk, look around, sneak/sprint, pause randomly
+    const behavior = async () => {
       if (!this.bot || this.state !== 'connected') return;
 
       try {
-        const sword = this.bot.inventory.items().find(item => item.name.includes('sword')); 
-        if (!sword) await this.craftSword(mcData);
+        // Randomly decide to sneak, sprint or normal
+        const sneak = Math.random() < 0.2;
+        const sprint = !sneak && (Math.random() < 0.3);
 
-        if (this.bot.food < 15) await this.bot.autoEat.eat();
+        this.bot.setControlState('sneak', sneak);
+        this.bot.setControlState('sprint', sprint);
 
-        const entity = this.bot.nearestEntity(e => e.type === 'mob' && hostileMobs.includes(e.name));
-        if (entity) {
-          await this.attackMob(entity);
-        } else {
-          await this.mineTree(mcData);
+        // Pick a random point within 10 blocks to walk to
+        const pos = this.bot.entity.position;
+        const randomGoal = new goals.GoalNear(
+          pos.x + (Math.random() * 20 - 10),
+          pos.y,
+          pos.z + (Math.random() * 20 - 10),
+          1
+        );
+
+        this.log(`🚶 Walking to (${randomGoal.x.toFixed(1)}, ${randomGoal.y.toFixed(1)}, ${randomGoal.z.toFixed(1)}) [Sneak=${sneak}, Sprint=${sprint}]`);
+        await this.bot.pathfinder.goto(randomGoal);
+
+        // After arrival, look around slowly (simulate human looking)
+        for (let i = 0; i < 5; i++) {
+          if (this.state !== 'connected') break;
+          const yaw = this.bot.entity.yaw + (Math.random() * 1 - 0.5);
+          const pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, this.bot.entity.pitch + (Math.random() * 0.4 - 0.2)));
+          this.bot.look(yaw, pitch, true);
+          await new Promise(r => setTimeout(r, 1000 + Math.random() * 1500));
         }
+
+        // Sometimes pause to simulate thinking or reading chat
+        if (Math.random() < 0.3) {
+          this.log('🛑 Pausing to simulate human idle');
+          await new Promise(r => setTimeout(r, 3000 + Math.random() * 4000));
+        }
+
+        // Reset controls to default
+        this.bot.setControlState('sneak', false);
+        this.bot.setControlState('sprint', false);
+
       } catch (err) {
-        this.log(`⚠️ AI loop error: ${err.message}`);
+        this.log(`❌ Behavior error: ${err.message}`);
       }
 
-      setTimeout(loop, 3000);
+      // Loop behavior
+      if (this.state === 'connected') {
+        this.behaviorTimeout = setTimeout(behavior, 1000);
+      }
     };
 
-    loop();
+    behavior();
   }
 
-  async mineTree(mcData) {
-    const logBlock = this.bot.findBlock({
-      matching: mcData.blocksByName.oak_log.id,
-      maxDistance: 20
-    });
+  startAttackLoop() {
+    if (!this.bot || this.state !== 'connected') return;
 
-    if (logBlock) {
-      this.log('🌳 Found tree, mining...');
-      await this.bot.collectBlock.collect(logBlock);
+    const hostileMobs = ['zombie', 'skeleton', 'creeper', 'spider', 'witch'];
+
+    this.attackInterval = setInterval(() => {
+      if (!this.bot || this.state !== 'connected') return;
+
+      // Find nearest hostile mob within 6 blocks
+      const entity = this.bot.nearestEntity(e =>
+        e.type === 'mob' &&
+        hostileMobs.includes(e.name) &&
+        this.bot.entity.position.distanceTo(e.position) < 6
+      );
+
+      if (entity && Math.random() < 0.7) {
+        try {
+          this.bot.lookAt(entity.position.offset(0, entity.height / 2, 0), true, () => {
+            this.bot.attack(entity);
+            this.log(`⚔️ Attacked ${entity.name}`);
+          });
+        } catch (err) {
+          this.log(`❌ Attack error: ${err.message}`);
+        }
+      } else {
+        // 20% chance to retreat (walk backwards a little)
+        if (Math.random() < 0.2) {
+          const pos = this.bot.entity.position;
+          const retreatGoal = new goals.GoalNear(
+            pos.x + (Math.random() * 4 - 2),
+            pos.y,
+            pos.z + (Math.random() * 4 - 2),
+            1
+          );
+          this.log(`↩️ Retreating from combat`);
+          this.bot.pathfinder.goto(retreatGoal).catch(() => {});
+        }
+      }
+    }, 8000 + Math.random() * 7000);
+  }
+
+  stopBehavior() {
+    if (this.chatInterval) clearInterval(this.chatInterval);
+    if (this.behaviorTimeout) clearTimeout(this.behaviorTimeout);
+    if (this.attackInterval) clearInterval(this.attackInterval);
+
+    this.chatInterval = null;
+    this.behaviorTimeout = null;
+    this.attackInterval = null;
+
+    if (this.bot) {
+      this.bot.setControlState('sneak', false);
+      this.bot.setControlState('sprint', false);
     }
   }
 
-  async craftSword(mcData) {
-    this.log('🛠️ Crafting sword...');
-    const workbench = this.bot.findBlock({
-      matching: mcData.blocksByName.crafting_table.id,
-      maxDistance: 10
-    });
-
-    const swordRecipe = this.bot.recipesFor(mcData.itemsByName.wooden_sword.id, null, workbench)[0];
-    if (swordRecipe) {
-      await this.bot.craft(swordRecipe, 1, workbench);
-      this.log('🗡️ Sword crafted.');
-    } else {
-      this.log('⚠️ No recipe found for sword.');
+  sendCommand(command) {
+    if (this.state !== 'connected' || !this.bot) {
+      this.log('❌ Bot not connected');
+      return false;
     }
-  }
 
-  async attackMob(entity) {
-    this.log(`⚔️ Attacking ${entity.name}`);
-    await this.bot.pvp.attack(entity);
+    this.lastCommandAt = new Date();
+    this.commandHistory.push({ command, timestamp: this.lastCommandAt });
+    this.log(`💬 Command sent: ${command}`);
+
+    try {
+      this.bot.chat(command);
+      return true;
+    } catch (err) {
+      this.log(`❌ Send error: ${err.message}`);
+      return false;
+    }
   }
 
   disconnect() {
+    this.stopBehavior();
     if (this.bot) {
       try {
-        this.bot.end();
+        if (this.state === 'connected' || this.state === 'connecting') {
+          this.bot.quit('User disconnected');
+        }
       } catch (err) {
         this.log(`❌ Disconnect error: ${err.message}`);
       }
       this.bot = null;
     }
-
-    this.state = 'disconnected';
+    if (this.state !== 'error') {
+      this.state = 'disconnected';
+    }
     this.log('🔌 Bot disconnected.');
   }
-}
 
-module.exports = { BotInstance };
+  attachWS(ws) {
+    this.wsClients.add(ws);
+    this.log(`🔗 WS client connected (${this.wsClients.size})`);
+  }
+
+  detachWS(ws) {
+    this.wsClients.delete(ws);
+    this.log(`❌ WS client disconnected (${this.wsClients.size})`);
+  }
+}
