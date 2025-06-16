@@ -6,6 +6,25 @@ import { Vec3 } from 'vec3';
 const mcDataLoader = require('minecraft-data');
 
 export class BotInstance {
+  /**
+   * Returns basic status for API and UI
+   */
+  getInfo() {
+    return {
+      id: this.id,
+      userId: this.userId,
+      username: this.username,
+      serverIp: this.serverIp,
+      serverPort: this.serverPort,
+      state: this.state,
+      lastCommandAt: this.lastCommandAt,
+      error: this.error,
+      logs: this.logs.slice(-20),
+      commandHistory: this.commandHistory.slice(-10),
+    };
+  }
+
+  constructor({ id, userId, serverIp, serverPort = 25565, username }) { {
   constructor({ id, userId, serverIp, serverPort = 25565, username }) {
     this.id = id;
     this.userId = userId;
@@ -138,6 +157,21 @@ export class BotInstance {
   }
 
   async fullSurvivalLogic() {
+    if (!this.bot || !this.mcData) return;
+
+    // If hungry => eat
+    if (typeof this.bot.food === 'number' && this.bot.food < 18) await this.eatFood();
+
+    // Ensure sword & pickaxe
+    const sword = this.bot.inventory.items().find(item => item.name.includes('sword'));
+    if (!sword) await this.craftTool('wooden_sword');
+
+    const pickaxe = this.bot.inventory.items().find(item => item.name.includes('pickaxe'));
+    if (!pickaxe) await this.craftTool('wooden_pickaxe');
+
+    // Mining basic resources
+    await this.mineNearby(['log', 'stone', 'coal_ore']);
+  }() {
     if (!this.bot) return;
 
     // If hungry => eat
