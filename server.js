@@ -1,26 +1,21 @@
-/**
- * MinecraftBot Platform Backend
- * Refactored with separate bot module and improved connection handling
- **/
-
-import express from 'express';
-import http from 'http';
-import WebSocket, { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
-import bodyParser from 'body-parser';
-import cors from 'cors';
-import crypto from 'crypto';
-import morgan from 'morgan';
-import rateLimit from 'express-rate-limit';
-import { BotInstance } from './bot.js';
+const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
+const jwt = require('jsonwebtoken');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const crypto = require('crypto');
+const morgan = require('morgan');
+const rateLimit = require('express-rate-limit');
+const { BotInstance } = require('./bot');  // CommonJS export
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'supersecretkeychange';
 
 // In-memory stores (replace with DB for production)
-const users = new Map(); // userId => { username, passwordHash }
-const userBots = new Map(); // userId => Set(botId)
-const bots = new Map(); // botId => BotInstance
+const users = new Map();
+const userBots = new Map();
+const bots = new Map();
 
 // Utils
 const hashPassword = (pw) => crypto.createHash('sha256').update(pw).digest('hex');
@@ -56,8 +51,7 @@ function authMiddleware(req, res, next) {
   next();
 }
 
-// --- User Routes ---
-
+// User Registration
 app.post('/api/register', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Missing username or password' });
@@ -70,49 +64,37 @@ app.post('/api/register', (req, res) => {
   res.json({ message: 'Registered', userId, username });
 });
 
+// User Login
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Missing username or password' });
   const found = [...users.entries()].find(([, u]) => u.username === username);
-  if (!found) return res.status(401).json({ error: 'Invalid creds' });
+  if (!found) return res.status(401).json({ error: 'Invalid credentials' });
   const [userId, user] = found;
-  if (user.passwordHash !== hashPassword(password)) return res.status(401).json({ error: 'Invalid creds' });
+  if (user.passwordHash !== hashPassword(password)) return res.status(401).json({ error: 'Invalid credentials' });
   const token = generateToken(userId);
   res.json({ message: 'Logged in', token });
 });
 
-// --- Bot management routes ---
-
-// Create bot
+// Create Bot
 app.post('/api/bots', authMiddleware, (req, res) => {
   const userId = req.userId;
   const { serverIp, serverPort, username } = req.body;
   if (!serverIp) return res.status(400).json({ error: 'Missing serverIp' });
 
   const botId = generateId(12);
-  
-  // Generate random username if not provided
   const botUsername = username || `NoobBot_${Math.random().toString(36).substring(2, 8)}`;
-  
-  const bot = new BotInstance({ 
-    id: botId, 
-    userId, 
-    serverIp, 
-    serverPort: serverPort || 25565, 
-    username: botUsername 
-  });
+  const bot = new BotInstance({ id: botId, userId, serverIp, serverPort: serverPort || 25565, username: botUsername });
 
   bots.set(botId, bot);
   if (!userBots.has(userId)) userBots.set(userId, new Set());
   userBots.get(userId).add(botId);
-
-  // Start the bot connection
   bot.spawn();
 
   res.json({ message: 'Bot created and connecting', botId, info: bot.getInfo() });
 });
 
-// List user's bots
+// List User Bots
 app.get('/api/bots', authMiddleware, (req, res) => {
   const userId = req.userId;
   const ids = [...(userBots.get(userId) || [])];
@@ -120,7 +102,7 @@ app.get('/api/bots', authMiddleware, (req, res) => {
   res.json(infos);
 });
 
-// Get bot info
+// Bot Info
 app.get('/api/bots/:botId', authMiddleware, (req, res) => {
   const userId = req.userId;
   const bot = bots.get(req.params.botId);
@@ -129,7 +111,7 @@ app.get('/api/bots/:botId', authMiddleware, (req, res) => {
   res.json(bot.getInfo());
 });
 
-// Send chat command to bot
+// Send Command
 app.post('/api/bots/:botId/command', authMiddleware, (req, res) => {
   const userId = req.userId;
   const bot = bots.get(req.params.botId);
@@ -144,17 +126,17 @@ app.post('/api/bots/:botId/command', authMiddleware, (req, res) => {
   res.json({ message: `Command sent: ${command}` });
 });
 
-// Disconnect bot
+// Disconnect Bot
 app.post('/api/bots/:botId/disconnect', authMiddleware, (req, res) => {
   const userId = req.userId;
   const bot = bots.get(req.params.botId);
   if (!bot) return res.status(404).json({ error: 'Bot not found' });
   if (bot.userId !== userId) return res.status(403).json({ error: 'Forbidden' });
   bot.disconnect();
-  res.json({ message: 'Bot disconnect requested' });
+  res.json({ message: 'Bot disconnected' });
 });
 
-// Delete bot
+// Delete Bot
 app.delete('/api/bots/:botId', authMiddleware, (req, res) => {
   const userId = req.userId;
   const botId = req.params.botId;
@@ -167,9 +149,8 @@ app.delete('/api/bots/:botId', authMiddleware, (req, res) => {
   res.json({ message: 'Bot deleted' });
 });
 
-// --- WebSocket server for real-time bot interaction ---
-
-const wss = new WebSocketServer({ server, path: '/ws' });
+// WebSocket Server
+const wss = new WebSocket.Server({ server, path: '/ws' });
 
 wss.on('connection', (ws, req) => {
   let botId = null;
@@ -181,35 +162,31 @@ wss.on('connection', (ws, req) => {
     botId = params.get('botId');
     
     if (!token || !botId) {
-      ws.send(JSON.stringify({ error: 'Missing token or botId query params' }));
+      ws.send(JSON.stringify({ error: 'Missing token or botId' }));
       return ws.close();
     }
-    
+
     const decoded = verifyToken(token);
     if (!decoded) {
       ws.send(JSON.stringify({ error: 'Invalid token' }));
       return ws.close();
     }
-    
+
     userId = decoded.userId;
     const bot = bots.get(botId);
     if (!bot) {
       ws.send(JSON.stringify({ error: 'Bot not found' }));
       return ws.close();
     }
-    
+
     if (bot.userId !== userId) {
       ws.send(JSON.stringify({ error: 'Forbidden for this bot' }));
       return ws.close();
     }
 
-    // Attach WS to bot
     bot.attachWS(ws);
-
-    // Send initial bot info
     ws.send(JSON.stringify({ type: 'info', bot: bot.getInfo() }));
 
-    // Handle incoming messages
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
@@ -219,7 +196,7 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ type: 'error', message: 'Bot not connected' }));
           }
         } else {
-          ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type or invalid data' }));
+          ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
         }
       } catch (err) {
         ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON format' }));
@@ -246,11 +223,10 @@ wss.on('connection', (ws, req) => {
   }
 });
 
-// Cleanup disconnected bots periodically
+// Cleanup disconnected bots
 setInterval(() => {
   for (const [botId, bot] of bots.entries()) {
     if (bot.state === 'error' && bot.wsClients.size === 0) {
-      // Clean up bots that errored and have no active connections
       const userId = bot.userId;
       if (userBots.has(userId)) {
         userBots.get(userId).delete(botId);
@@ -260,11 +236,10 @@ setInterval(() => {
       console.log(`Cleaned up abandoned bot: ${botId}`);
     }
   }
-}, 60000); // Check every minute
+}, 60000);
 
-// --- Start server ---
-
+// Start server
 server.listen(PORT, () => {
-  console.log(`MinecraftBot Platform Backend running on http://localhost:${PORT}`);
-  console.log(`WebSocket server available at ws://localhost:${PORT}/ws`);
+  console.log(`MinecraftBot Backend running on http://localhost:${PORT}`);
+  console.log(`WebSocket server ws://localhost:${PORT}/ws`);
 });
