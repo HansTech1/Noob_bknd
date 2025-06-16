@@ -1,5 +1,7 @@
 import mineflayer from 'mineflayer';
-import { pathfinder, Movements, goals } from 'mineflayer-pathfinder';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 import { Vec3 } from 'vec3';
 
 export class BotInstance {
@@ -20,8 +22,6 @@ export class BotInstance {
     this.chatInterval = null;
     this.behaviorTimeout = null;
     this.attackInterval = null;
-
-    this.isMoving = false;
   }
 
   log(msg) {
@@ -77,7 +77,7 @@ export class BotInstance {
         hideErrors: false,
       });
 
-      // Attach pathfinder plugin for smart movement
+      // Attach pathfinder plugin
       this.bot.loadPlugin(pathfinder);
 
       const timeout = setTimeout(() => {
@@ -147,7 +147,6 @@ export class BotInstance {
 
   initPathfinder() {
     if (!this.bot) return;
-
     const defaultMove = new Movements(this.bot);
     this.bot.pathfinder.setMovements(defaultMove);
   }
@@ -169,22 +168,20 @@ export class BotInstance {
       this.log(`💬 Sent: ${msg}`);
     };
 
-    // Send chat occasionally, every 15-30 mins, no spam
+    // Chat every 15–30 min
     this.chatInterval = setInterval(sendRandomChat, 15 * 60_000 + Math.random() * 15 * 60_000);
 
-    // Behavior loop: walk, look around, sneak/sprint, pause randomly
+    // Behavior: walk, look, sneak/sprint, pause
     const behavior = async () => {
       if (!this.bot || this.state !== 'connected') return;
 
       try {
-        // Randomly decide to sneak, sprint or normal
         const sneak = Math.random() < 0.2;
-        const sprint = !sneak && (Math.random() < 0.3);
+        const sprint = !sneak && Math.random() < 0.3;
 
         this.bot.setControlState('sneak', sneak);
         this.bot.setControlState('sprint', sprint);
 
-        // Pick a random point within 10 blocks to walk to
         const pos = this.bot.entity.position;
         const randomGoal = new goals.GoalNear(
           pos.x + (Math.random() * 20 - 10),
@@ -196,7 +193,7 @@ export class BotInstance {
         this.log(`🚶 Walking to (${randomGoal.x.toFixed(1)}, ${randomGoal.y.toFixed(1)}, ${randomGoal.z.toFixed(1)}) [Sneak=${sneak}, Sprint=${sprint}]`);
         await this.bot.pathfinder.goto(randomGoal);
 
-        // After arrival, look around slowly (simulate human looking)
+        // Look around slowly
         for (let i = 0; i < 5; i++) {
           if (this.state !== 'connected') break;
           const yaw = this.bot.entity.yaw + (Math.random() * 1 - 0.5);
@@ -205,13 +202,11 @@ export class BotInstance {
           await new Promise(r => setTimeout(r, 1000 + Math.random() * 1500));
         }
 
-        // Sometimes pause to simulate thinking or reading chat
         if (Math.random() < 0.3) {
           this.log('🛑 Pausing to simulate human idle');
           await new Promise(r => setTimeout(r, 3000 + Math.random() * 4000));
         }
 
-        // Reset controls to default
         this.bot.setControlState('sneak', false);
         this.bot.setControlState('sprint', false);
 
@@ -219,7 +214,6 @@ export class BotInstance {
         this.log(`❌ Behavior error: ${err.message}`);
       }
 
-      // Loop behavior
       if (this.state === 'connected') {
         this.behaviorTimeout = setTimeout(behavior, 1000);
       }
@@ -236,7 +230,6 @@ export class BotInstance {
     this.attackInterval = setInterval(() => {
       if (!this.bot || this.state !== 'connected') return;
 
-      // Find nearest hostile mob within 6 blocks
       const entity = this.bot.nearestEntity(e =>
         e.type === 'mob' &&
         hostileMobs.includes(e.name) &&
@@ -252,19 +245,16 @@ export class BotInstance {
         } catch (err) {
           this.log(`❌ Attack error: ${err.message}`);
         }
-      } else {
-        // 20% chance to retreat (walk backwards a little)
-        if (Math.random() < 0.2) {
-          const pos = this.bot.entity.position;
-          const retreatGoal = new goals.GoalNear(
-            pos.x + (Math.random() * 4 - 2),
-            pos.y,
-            pos.z + (Math.random() * 4 - 2),
-            1
-          );
-          this.log(`↩️ Retreating from combat`);
-          this.bot.pathfinder.goto(retreatGoal).catch(() => {});
-        }
+      } else if (Math.random() < 0.2) {
+        const pos = this.bot.entity.position;
+        const retreatGoal = new goals.GoalNear(
+          pos.x + (Math.random() * 4 - 2),
+          pos.y,
+          pos.z + (Math.random() * 4 - 2),
+          1
+        );
+        this.log('↩️ Retreating from combat');
+        this.bot.pathfinder.goto(retreatGoal).catch(() => {});
       }
     }, 8000 + Math.random() * 7000);
   }
