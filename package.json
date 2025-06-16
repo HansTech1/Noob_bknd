@@ -16,6 +16,12 @@
     "express-rate-limit": "^6.7.0",
     "jsonwebtoken": "^9.0.0",
     "mineflayer": "^4.7.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-collectblock": "^1.6.0",
+    "mineflayer-pvp": "^1.0.0",
+    "mineflayer-auto-eat": "^1.2.2",
+    "vec3": "^0.1.4",
+    "minecraft-data": "^2.0.0",
     "morgan": "^1.10.0",
     "ws": "^8.13.0"
   }
