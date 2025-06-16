@@ -1,11 +1,12 @@
 import mineflayer from 'mineflayer';
 import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 import { Vec3 } from 'vec3';
 
+const require = createRequire(import.meta.url);
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+
 export class BotInstance {
-  constructor({ id, userId, serverIp, serverPort = 25565, username }) {
+  constructor({ id, userId, serverIp, serverPort, username }) {
     this.id = id;
     this.userId = userId;
     this.serverIp = serverIp;
