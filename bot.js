@@ -3,6 +3,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
 import { Vec3 } from 'vec3';
+const mcDataLoader = require('minecraft-data');
 
 export class BotInstance {
   constructor({ id, userId, serverIp, serverPort = 25565, username }) {
@@ -10,7 +11,7 @@ export class BotInstance {
     this.userId = userId;
     this.serverIp = serverIp;
     this.serverPort = serverPort;
-    this.username = username || `NoobBot_${Math.random().toString(36).substring(2, 8)}`;
+    this.username = username || `Survivor_${Math.random().toString(36).substring(2, 8)}`;
     this.state = 'idle';
     this.logs = [];
     this.commandHistory = [];
@@ -18,7 +19,6 @@ export class BotInstance {
     this.wsClients = new Set();
     this.lastCommandAt = null;
     this.error = null;
-
     this.chatInterval = null;
     this.behaviorTimeout = null;
     this.attackInterval = null;
@@ -30,7 +30,6 @@ export class BotInstance {
     this.logs.push(line);
     if (this.logs.length > 1000) this.logs.shift();
     console.log(`Bot[${this.id}]: ${msg}`);
-
     for (const ws of this.wsClients) {
       if (ws.readyState === 1) {
         try {
@@ -42,31 +41,14 @@ export class BotInstance {
     }
   }
 
-  getInfo() {
-    return {
-      id: this.id,
-      userId: this.userId,
-      username: this.username,
-      serverIp: this.serverIp,
-      serverPort: this.serverPort,
-      state: this.state,
-      lastCommandAt: this.lastCommandAt,
-      error: this.error,
-      logs: this.logs.slice(-20),
-      commandHistory: this.commandHistory.slice(-10),
-    };
-  }
-
   spawn() {
     if (this.bot) {
       this.log('Bot already exists, disconnecting...');
       this.disconnect();
     }
-
     this.state = 'connecting';
     this.error = null;
     this.log(`Connecting to ${this.serverIp}:${this.serverPort} as ${this.username}...`);
-
     try {
       this.bot = mineflayer.createBot({
         host: this.serverIp,
@@ -78,7 +60,6 @@ export class BotInstance {
       });
 
       this.bot.loadPlugin(pathfinder);
-
       const timeout = setTimeout(() => {
         if (this.state === 'connecting') {
           this.log('⏱️ Connection timeout');
@@ -92,7 +73,9 @@ export class BotInstance {
         clearTimeout(timeout);
         this.state = 'connected';
         this.log('✅ Successfully connected');
-        this.initPathfinder();
+        this.mcData = mcDataLoader(this.bot.version);
+        this.movements = new Movements(this.bot, this.mcData);
+        this.bot.pathfinder.setMovements(this.movements);
         this.startBehaviorLoop();
         this.startAttackLoop();
       });
@@ -118,12 +101,7 @@ export class BotInstance {
         for (const ws of this.wsClients) {
           if (ws.readyState === 1) {
             try {
-              ws.send(JSON.stringify({
-                type: 'chat',
-                botId: this.id,
-                username,
-                message
-              }));
+              ws.send(JSON.stringify({ type: 'chat', botId: this.id, username, message }));
             } catch (err) {
               console.error('WebSocket chat error:', err);
             }
@@ -136,7 +114,6 @@ export class BotInstance {
         this.state = 'error';
         this.error = `Kicked: ${reason}`;
       });
-
     } catch (err) {
       this.state = 'error';
       this.error = err.message || String(err);
@@ -144,91 +121,80 @@ export class BotInstance {
     }
   }
 
-  initPathfinder() {
-    if (!this.bot) return;
-    const defaultMove = new Movements(this.bot);
-    this.bot.pathfinder.setMovements(defaultMove);
-  }
-
   startBehaviorLoop() {
     if (!this.bot || this.state !== 'connected') return;
-
-    const randomChats = ["Je suis là.", "Je visite...", "Hmm...", "Beau monde ici."];
-    this.chatInterval = setInterval(() => {
-      if (this.state === 'connected') {
-        const msg = randomChats[Math.floor(Math.random() * randomChats.length)];
-        this.bot.chat(msg);
-        this.log(`💬 Sent: ${msg}`);
-      }
-    }, 15 * 60_000 + Math.random() * 15 * 60_000);
-
-    const behavior = async () => {
+    const loop = async () => {
       if (!this.bot || this.state !== 'connected') return;
       try {
-        const sneak = Math.random() < 0.2;
-        const sprint = !sneak && Math.random() < 0.3;
-        this.bot.setControlState('sneak', sneak);
-        this.bot.setControlState('sprint', sprint);
-
-        const pos = this.bot.entity.position;
-        const dx = Math.random() * 20 - 10;
-        const dz = Math.random() * 20 - 10;
-        const targetX = Math.floor(pos.x + dx);
-        const targetZ = Math.floor(pos.z + dz);
-        const targetY = await this.findSafeY(targetX, pos.y, targetZ);
-
-        const randomGoal = new goals.GoalNear(targetX, targetY, targetZ, 1);
-        this.log(`🚶 Walking to (${randomGoal.x}, ${randomGoal.y}, ${randomGoal.z}) [Sneak=${sneak}, Sprint=${sprint}]`);
-
-        await Promise.race([
-          this.bot.pathfinder.goto(randomGoal),
-          this.pathTimeout(8000)
-        ]);
-
-        for (let i = 0; i < 5; i++) {
-          if (this.state !== 'connected') break;
-          const yaw = this.bot.entity.yaw + (Math.random() * 1 - 0.5);
-          const pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.bot.entity.pitch + (Math.random() * 0.4 - 0.2)));
-          this.bot.look(yaw, pitch, true);
-          await new Promise(r => setTimeout(r, 1000 + Math.random() * 1500));
-        }
-
-        if (Math.random() < 0.3) {
-          this.log('🛑 Pausing to simulate human idle');
-          await new Promise(r => setTimeout(r, 3000 + Math.random() * 4000));
-        }
-
-        this.bot.setControlState('sneak', false);
-        this.bot.setControlState('sprint', false);
-
+        await this.fullSurvivalLogic();
       } catch (err) {
         this.log(`❌ Behavior error: ${err.message}`);
-        this.bot.pathfinder.setGoal(null);
       }
-
       if (this.state === 'connected') {
-        this.behaviorTimeout = setTimeout(behavior, 1000);
+        this.behaviorTimeout = setTimeout(loop, 2000);
       }
     };
-    behavior();
+    loop();
   }
 
-  pathTimeout(ms) {
-    return new Promise((_, reject) => {
-      setTimeout(() => reject(new Error("Pathfinding timeout")), ms);
-    });
+  async fullSurvivalLogic() {
+    if (!this.bot) return;
+
+    // If hungry => eat
+    if (this.bot.food < 18) await this.eatFood();
+
+    // If night => seek shelter
+    if (this.bot.time.isNight) await this.seekShelter();
+
+    // Ensure sword & pickaxe
+    const sword = this.bot.inventory.items().find(item => item.name.includes('sword'));
+    if (!sword) await this.craftTool('wooden_sword');
+
+    const pickaxe = this.bot.inventory.items().find(item => item.name.includes('pickaxe'));
+    if (!pickaxe) await this.craftTool('wooden_pickaxe');
+
+    // Mining basic resources
+    await this.mineNearby(['log', 'stone', 'coal_ore']);
   }
 
-  async findSafeY(x, baseY, z) {
-    const pos = new Vec3(x, baseY, z);
-    let block = this.bot.blockAt(pos);
-    let attempts = 0;
-    while (block && block.boundingBox !== 'empty' && attempts < 5) {
-      pos.y += 1;
-      block = this.bot.blockAt(pos);
-      attempts++;
+  async mineNearby(blockNames) {
+    for (let name of blockNames) {
+      const blockType = this.mcData.blocksByName[name];
+      const target = this.bot.findBlock({ matching: blockType.id, maxDistance: 20 });
+      if (target) {
+        await this.goto(target.position);
+        await this.bot.dig(target);
+        this.log(`⛏️ Mined ${name}`);
+      }
     }
-    return pos.y;
+  }
+
+  async seekShelter() {
+    const shelter = this.bot.findBlock({ matching: b => b.boundingBox === 'empty', maxDistance: 10 });
+    if (shelter) await this.goto(shelter.position);
+  }
+
+  async craftTool(toolType) {
+    const table = this.bot.findBlock({ matching: this.mcData.blocksByName.crafting_table.id, maxDistance: 32 });
+    if (!table) return;
+    await this.goto(table.position);
+    const toolName = toolType;
+    const recipe = this.bot.recipesFor(this.mcData.itemsByName[toolName].id)[0];
+    if (recipe) await this.bot.craft(recipe, 1, table);
+  }
+
+  async eatFood() {
+    const foodItem = this.bot.inventory.items().find(item => item.name.includes('beef') || item.name.includes('pork') || item.name.includes('chicken') || item.name.includes('mutton'));
+    if (foodItem) {
+      await this.bot.equip(foodItem, 'hand');
+      await this.bot.consume();
+      this.log('🍖 Ate food');
+    }
+  }
+
+  async goto(pos) {
+    const goal = new goals.GoalNear(pos.x, pos.y, pos.z, 1);
+    await this.bot.pathfinder.goto(goal);
   }
 
   startAttackLoop() {
@@ -237,17 +203,16 @@ export class BotInstance {
     this.attackInterval = setInterval(() => {
       if (!this.bot || this.state !== 'connected') return;
       const entity = this.bot.nearestEntity(e => e.type === 'mob' && hostileMobs.includes(e.name) && this.bot.entity.position.distanceTo(e.position) < 6);
-      if (entity && Math.random() < 0.7) {
+      if (entity) {
         try {
-          this.bot.lookAt(entity.position.offset(0, entity.height / 2, 0), true, () => {
-            this.bot.attack(entity);
-            this.log(`⚔️ Attacked ${entity.name}`);
-          });
+          this.bot.lookAt(entity.position.offset(0, entity.height / 2, 0));
+          this.bot.attack(entity);
+          this.log(`⚔️ Attacked ${entity.name}`);
         } catch (err) {
           this.log(`❌ Attack error: ${err.message}`);
         }
       }
-    }, 8000 + Math.random() * 7000);
+    }, 7000);
   }
 
   stopBehavior() {
@@ -257,27 +222,6 @@ export class BotInstance {
     this.chatInterval = null;
     this.behaviorTimeout = null;
     this.attackInterval = null;
-    if (this.bot) {
-      this.bot.setControlState('sneak', false);
-      this.bot.setControlState('sprint', false);
-    }
-  }
-
-  sendCommand(command) {
-    if (this.state !== 'connected' || !this.bot) {
-      this.log('❌ Bot not connected');
-      return false;
-    }
-    this.lastCommandAt = new Date();
-    this.commandHistory.push({ command, timestamp: this.lastCommandAt });
-    this.log(`💬 Command sent: ${command}`);
-    try {
-      this.bot.chat(command);
-      return true;
-    } catch (err) {
-      this.log(`❌ Send error: ${err.message}`);
-      return false;
-    }
   }
 
   disconnect() {
